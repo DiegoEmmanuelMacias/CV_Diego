@@ -1,0 +1,365 @@
+#!/bin/bash
+
+source "$(pwd)/simple_curses.sh"
+
+current_index=0 #Almacena la posicion de la seleccion actual
+name_index="" #Almacena el nombre de la seleccion actual
+aux_sort="1" #almacena la opcion de ordenamiento (Nombre por defecto)
+
+
+# Función para listar los archivos y directorios en la ventana
+list_files() {
+    clear
+    
+    
+    local files=()
+    local dirs=()
+    for f in *; do  #extrae archivos y directorios de f y los distribuye en las dos matrices
+        if [ -d "$f" ]; then
+            dirs+=("$f")
+        else
+            files+=("$f")
+        fi
+    done
+
+    # Ordenamos la lista de directorios y archivos
+    if ! is_directory_empty "$(pwd)"; then
+        case $aux_sort in
+                        $'1') #ordena por nombre
+                            IFS=$'\n' dirs=($(sort <<<"${dirs[*]}"))
+                            IFS=$'\n' files=($(sort <<<"${files[*]}"))
+                            ;;
+                        $'2') #ordena por tamaño
+                            IFS=$'\n' dirs=($(du -sb "${dirs[@]}" | sort -n | cut -f2-))
+                            IFS=$'\n' files=($(du -sb "${files[@]}" | sort -n | cut -f2-))
+                            ;;
+                        $'3') #ordena por fecha de modifcacion antiguo -> nuevo
+                            IFS=$'\n' dirs=($(for d in "${dirs[@]}"; do echo "$(stat -c '%Y' "$d")-$(stat -c '%m' "$d")-$(stat -c '%d' "$d") $d"; done | sort -k1 -n | cut -d' ' -f2-))
+                            IFS=$'\n' files=($(for f in "${files[@]}"; do echo "$(stat -c '%Y' "$f")-$(stat -c '%m' "$f")-$(stat -c '%d' "$f") $f"; done | sort -k1 -n | cut -d' ' -f2-))
+                            ;;
+                        esac
+    fi
+
+    # Creamos la ventana principal
+    window "GESTOR DE ARCHIVOS" "white" "55%" "blue" # 55 debido a que es el porcentaje de anchura en la pantalla que se desea tomar
+    append "Directorio actual:$(pwd)" "" "white" "blue"
+    endwin
+
+    # Agregamos los directorios a la ventana
+    for i in "${!dirs[@]}"; do
+        if [ "$i" -eq "$current_index" ]; then #significa que la posicion actual del array es la que se está seleccionando
+            append "${dirs[i]}/" "white" "cyan"  # Directorio seleccionado
+            name_index="${dirs[i]}"  # Guardamos el nombre del directorio seleccionado
+        else
+            append "${dirs[i]}/" "white" "yellow"  # Directorio no seleccionado
+        fi
+    done
+    
+    # Agregamos los archivos a la ventana
+    for i in "${!files[@]}"; do
+        if [ "$i" -eq "$(($current_index - ${#dirs[@]}))" ]; then
+            append "${files[i]}" "white" "cyan"  # Archivo seleccionado
+            name_index="${files[i]}"  # Guardamos el nombre del archivo seleccionado
+        else
+            append "${files[i]}" "white" "green"  # Archivo no seleccionado
+        fi
+    done
+
+    # Actualizamos la ventana
+    endwin
+
+    if ! is_directory_empty "$(pwd)"; then #verifica si el directorio está vacio. Si lo está, se omite la generacion de la ventana de la derecha
+            col_right           #ubica la ventana en el lado derecho
+        window "" "white" "45%" #45 es el restante de anchura de la pantalla
+        append_tabbed "TAMAÑO: FECHA DE MODIFICACION" 2 
+        endwin
+
+        #se distribuye de manera tabulada tamaño y fecha de modificacion en dos columnas a la derecha
+        for i in "${!dirs[@]}"; do
+            if [ "$i" -eq "$current_index" ]; then
+                formatted_date=$(date -d "$(stat -c "%y" "${dirs[i]}")" "+%d %b %Y") #extrae la fecha de stat y la formatea con date
+                append_tabbed "$(stat -c "%s" "${dirs[i]}"): $formatted_date" 2 "" "cyan"  # Directorio seleccionado con información
+            else
+                formatted_date=$(date -d "$(stat -c "%y" "${dirs[i]}")" "+%d %b %Y")
+                append_tabbed "$(stat -c "%s" "${dirs[i]}"): $formatted_date" 2 "" "yellow"  # Directorio no seleccionado con información
+            fi
+        done
+        
+        # Agregamos los archivos a la ventana
+        for i in "${!files[@]}"; do
+            if [ "$i" -eq "$(($current_index - ${#dirs[@]}))" ]; then
+                formatted_date=$(date -d "$(stat -c "%y" "${files[i]}")" "+%d %b %Y")
+                append_tabbed "$(stat -c "%s" "${files[i]}"): $formatted_date" 2 "" "cyan"  # Archivo seleccionado con información
+            else
+                formatted_date=$(date -d "$(stat -c "%y" "${files[i]}")" "+%d %b %Y")
+                append_tabbed "$(stat -c "%s" "${files[i]}"): $formatted_date" 2 "" "green"  # Archivo no seleccionado con información
+            fi
+        done
+
+        endwin
+
+        move_up #reacomoda la ventana
+
+        #menu de usuario
+        window "1.Copiar 2.Borrar 3.Crear un directorio 4.Empaquetar archivo 5.Desempaquetar archivo 6.Mover 7.Renombrar 8.Ordenar por 9.Cambiar permisos" "gray" "100%" "cyan" 
+        append "e)Ejecutar p)Mostrar permisos s)Salir" "cyan" "gray" "cyan"
+        endwin
+    fi
+    
+}
+
+# Función para cambiar al directorio seleccionado
+change_dir() {
+    if [ -d "$name_index" ]; then #si el la seleccion actual es un directorio
+        cd "$name_index"
+        current_index=0
+        list_files
+    else #si no, se trata de un archivo
+        aux=$(dialog --title "ABRIR CON" --menu "Seleccione una acción:" 15 80 8 \
+                1 "NANO" \
+                2 "VI" \
+                3>&1 1>&2 2>&3) #menú para usar nano o vi dependiendo de lo que el usuario elija
+        case $aux in
+                        $'1') 
+                            nano "$name_index"
+                            ;;
+                        $'2')
+                            vi "$name_index"
+                            ;;
+                        esac
+        list_files
+    fi
+
+}
+
+# Función para retroceder al directorio anterior
+go_back() {
+    cd ..
+    current_index=0
+    list_files
+}
+
+# Función para moverse hacia arriba en la lista
+mover_arriba() {
+    if [ "$current_index" -gt 0 ]; then #si esta condicion no se cumple significaria que la seleccion actual es la primera, por lo tanto se salta
+        current_index=$(($current_index - 1))
+    fi
+}
+
+# Función para moverse hacia abajo en la lista
+move_down() {
+    local total_items=$(($(ls -1A | wc -l) - 1)) #Extrae el total de elementos en el directorio actual
+    if [ "$current_index" -lt "$total_items" ]; then
+        current_index=$(($current_index + 1))
+    fi
+}
+
+# Función para copiar archivos o directorios
+copiar_archivos() {
+    local origen="$(pwd)/$name_index"  # Ruta de origen
+    
+    local destino=$(dialog --title "ruta actual: $(pwd)" --inputbox "Ingrese la ruta de destino:" 10 60 3>&1 1>&2 2>&3)  # Solicitar ruta de destino
+    
+    if [ -e "$origen" ]; then #comprueba si la ruta origen existe
+        cp -r "$origen" "$destino"  # Copiar archivo
+    else
+        dialog --title "Error" --msgbox "El archivo no existe o no se puede editar." 10 40
+    fi
+}
+
+# Función para borrar archivos o directorios
+borrar_archivos() {
+    local archivo="$(pwd)/$name_index"  # Ruta del archivo a borrar
+    
+    if [ -e "$archivo" ]; then
+        rm -rf "$archivo"  # Borrar archivo
+        dialog --title "" --msgbox "El archivo/directorio ha sido borrado exitosamente" 10 40
+    else
+        dialog --title "Error" --msgbox "El archivo/directorio no existe o no se puede borrar." 10 40
+    fi
+}
+
+# Función para crear directorios
+crear_directorio() {
+    local directorio=$(dialog --title "ruta actual: $(pwd)" --inputbox "Ingrese el nombre del directorio:" 10 60 3>&1 1>&2 2>&3)  # Solicitar nombre del directorio
+
+    mkdir "$directorio"  # Crear directorio
+    dialog --msgbox "Directorio creado correctamente." 10 40
+}
+
+# Función para empaquetar o comprimir directorios
+empaquetar_directorio() {
+    local directorio=$name_index # Ruta del directorio a empaquetar
+    
+    if [ -d "$name_index" ]; then
+        tar -czvf "$directorio.tar.gz" "$directorio"  # Empaquetar directorio
+        dialog --msgbox "Directorio empaquetado correctamente." 10 40
+    else
+        dialog --msgbox "El elemento seleccionado no es un directorio" 10 40
+    fi
+}
+
+# Función para desempaquetar archivos o directorios
+desempaquetar_archivo() {
+    local destino="$(pwd)"
+    local directorio=$name_index  # Ruta del archivo a desempaquetar
+    tar -xzf "$directorio" -C "$destino"  # Desempaquetar archivo
+    dialog --msgbox "Archivo desempaquetado correctamente." 10 40
+    list_files
+}
+
+# Función par mover archivos o directorios
+mover_archivo() {
+    local origen="$(pwd)/$name_index"  # Ruta del archivo o directorio a renombrar
+
+    # Solicitar la ruta de destino
+    local destino=$(dialog --title "Renombrar" --inputbox "Ingrese la ruta de destino:" 10 60 3>&1 1>&2 2>&3)
+    
+    # Verificar si el archivo o directorio existe
+    if [ -e "$origen" ]; then
+        # Renombrar el archivo o directorio
+        mv "$origen" "$destino"
+        dialog --msgbox "El archivo o directorio se ha trasladado correctamente" 10 40
+    else
+        dialog --title "Error" --msgbox "El archivo o directorio destino no existe." 10 40
+    fi
+}
+
+#Funcion para renombrar archivos o directorios
+renombrar_archivo(){
+    local archivo="$(pwd)/$name_index"  # Ruta del archivo a renombrar
+    
+    # Verificar si el archivo existe
+    if [ -e "$archivo" ]; then
+        # Solicitar el nuevo nombre
+        local nuevo_nombre=$(dialog --title "Renombrar Archivo" --inputbox "Ingrese el nuevo nombre:" 10 60 3>&1 1>&2 2>&3)
+
+        # Renombrar el archivo
+        local directorio="$(dirname "$archivo")"
+        local nuevo_archivo="$directorio/$nuevo_nombre"
+        mv "$archivo" "$nuevo_archivo"
+        dialog --msgbox "Archivo renombrado correctamente." 10 40
+    else
+        dialog --title "Error" --msgbox "El archivo/directorio no existe." 10 40
+    fi
+}
+
+# Función para obtener una opcion de ordenamiento
+ordenar(){
+    aux_sort=$(dialog --title "ORDENAR POR" --menu "Seleccione una acción:" 15 80 8 \
+                1 "Nombre" \
+                2 "Tamaño" \
+                3 "Fecha de modificacion" \
+                3>&1 1>&2 2>&3) #guarda la opcion que elegiste
+    list_files
+}
+
+# Función para cambiar permisos de un archivo o directorio
+cambiar_permisos(){
+    local permisos=$(dialog --title "permisos" --inputbox "Ingresa los permisos en formato numero (777)" 10 60 3>&1 1>&2 2>&3)
+    chmod "$permisos" "$name_index"
+}
+
+# Funcion para ejecucion de archivos
+ejecutar_archivo(){
+    if [ -f "$name_index" ] && [ -x "$name_index" ]; then  #verifica que sea un archivo y que tenga permisos de ejecucion
+        bash "$name_index"
+    fi
+
+}
+
+# Función para ver permisos de un archivo o directorio 
+ver_permisos(){ 
+    #Extrae los permisos de ls -l y los pasa como entrada a adw para formatear la entrada y quedarse unicamente con los permisos
+    local permisos="$(ls -l "$name_index" | awk '{print $1}')" 
+    dialog --title "PERMISOS" --msgbox "Los permisos del directorio son:$permisos" 20 60
+}
+
+# Función para salir del programa
+salir(){
+    exit 1
+}
+
+# Funcion para detectar si el directorio actual esta vacio
+is_directory_empty() {
+    local directory="$1"
+    if [ -d "$directory" ] && [ -z "$(ls -A "$directory")" ]; then
+        return 0  # El directorio está vacío
+    else
+        return 1  # El directorio no está vacío
+    fi
+}
+
+
+#Funcion para leer tecla
+update() {
+    key=$(readKey)
+    case "$key" in
+        $'\e[A') #Tecla arriba
+            mover_arriba
+            ;;
+        $'\e[B') #Tecla abajo
+            move_down
+            ;;
+        $'\e[C') #Tecla derecha
+            change_dir
+            ;;
+        $'\e[D') #Tecla izquierda
+            go_back
+            ;;
+        $'1') 
+            copiar_archivos
+            ;;
+        $'2')
+            borrar_archivos
+            ;;
+        $'3')
+            crear_directorio
+            ;;
+        $'4')
+            empaquetar_directorio
+            ;;
+        $'5')
+            desempaquetar_archivo
+            ;;
+        $'6')
+            mover_archivo
+            ;;
+        $'7')
+            renombrar_archivo            
+            ;;
+        $'8')
+            ordenar
+            ;;
+        $'9')
+            cambiar_permisos
+            ;;
+        $'e'|$'E') # el '|' es para que funcione tanto con mayusculas como con minusculas
+            ejecutar_archivo
+            ;;
+        $'s'|$'S')
+            salir
+            ;;
+        $'p'|$'P')
+            ver_permisos
+            ;;
+        *)
+            ;;
+    esac
+}
+
+#funcion que devuelve la tecla presionada
+readKey() { 
+    read -rsN1 -t 0.0001 ret && read -t 0.0001 -rsd $'\0' d
+    echo -n "$ret$d"
+}
+
+
+main() {
+    
+    list_files
+}
+
+#loopea el main cada 0.0001 segundos
+main_loop -t 0.0001
+
